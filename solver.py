@@ -87,7 +87,7 @@ def calculate_effective_shares(
     if not np.allclose(system @ weights, rhs, rtol=1e-9, atol=1e-12):
         raise ValueError("Решение не удовлетворяет системе с нужной точностью")
 
-    contributions: dict[str, list[Edge]] = defaultdict(list)
+    contributions: dict[str, list[float]] = defaultdict(list)
 
     for edge in edges:
         if edge.owner_id in index:
