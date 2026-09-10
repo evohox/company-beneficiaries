@@ -52,3 +52,35 @@ def collect_relevant_companies(
             stack.append(owner_id)
 
     return relevant
+
+
+def prepare_target_edges(
+    incoming: dict[str, list[Edge]], relevant: set[str]
+) -> list[Edge]:
+    """Подготовить связи компаний из выбранного подграфа.
+
+    Одинаковые записи учитываются один раз.
+    Разные доли для одной пары владелец-компания
+    вызывают ValueError.
+    """
+
+    unique: dict[tuple[str, str], Edge] = {}
+
+    for company_id in sorted(relevant):
+        for edge in incoming[company_id]:
+            key = (edge.owner_id, edge.owned_id)
+
+            previous = unique.get(key)
+
+            if previous is None:
+                unique[key] = edge
+                continue
+
+            if previous.share != edge.share:
+                raise ValueError(
+                    f"Противоречивые доли для связи "
+                    f"{edge.owner_id!r} -> {edge.owned_id!r}: "
+                    f"{previous.share} и {edge.share}"
+                )
+
+    return list(unique.values())
