@@ -1,4 +1,5 @@
 import pytest
+import logging
 
 from loader import load_edges
 from models import Edge, Entity
@@ -36,7 +37,7 @@ def test_load_edges_returns_empty_list_for_zero_share(tmp_path, entities):
     path = tmp_path / "edges.csv"
     path.write_text(
         "owner_id,owned_id,share\n" "P1,C1,0\n",
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
 
     assert load_edges(path, entities) == []
@@ -73,13 +74,45 @@ def test_load_edges_rejects_invalid_records(tmp_path, entities, row, message):
         load_edges(path, entities)
 
 
-def test_load_edges_rejects_wrong_header(tmp_path, entities):
+@pytest.mark.parametrize("skip_invalid", [False, True])
+def test_load_edges_rejects_wrong_header(tmp_path, entities, skip_invalid):
     """CSV без обязательной колонки share должен быть отклонён."""
     path = tmp_path / "edges.csv"
     path.write_text(
         "owner_id,owned_id\n" "P1,C1\n",
-        encoding="utf-8",
+        encoding="utf-8-sig",
     )
 
     with pytest.raises(ValueError, match="ожидаются колонки"):
-        load_edges(path, entities)
+        load_edges(
+            path,
+            entities,
+            skip_invalid=skip_invalid,
+        )
+
+
+def test_load_edges_skips_invalid_and_reports(tmp_path, entities, caplog):
+    """Ошибочная запись пропускается, следующие связи загружаются."""
+    path = tmp_path / "edges.csv"
+    path.write_text(
+        "owner_id,owned_id,share\n"
+        "P1,C1,0.5\n"
+        "P1,C1,1.2\n"
+        "P1,C1,0\n"
+        "C1,C1,0.2\n",
+        encoding="utf-8-sig",
+    )
+
+    caplog.set_level(logging.INFO, logger="loader")
+
+    result = load_edges(path, entities, skip_invalid=True)
+
+    assert result == [
+        Edge("P1", "C1", 0.5),
+        Edge("C1", "C1", 0.2),
+    ]
+
+    assert "строка 3" in caplog.text
+    assert "диапазоне [0, 1]" in caplog.text
+    assert "некорректных=1" in caplog.text
+    assert "нулевых=1" in caplog.text
