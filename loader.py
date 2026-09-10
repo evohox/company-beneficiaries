@@ -1,8 +1,11 @@
 import math
+import logging
 import csv
 from pathlib import Path
 
 from models import Entity, Edge
+
+logger = logging.getLogger(__name__)
 
 
 def load_entities(path: str | Path) -> dict[str, Entity]:
@@ -67,9 +70,58 @@ def load_entities(path: str | Path) -> dict[str, Entity]:
     return entities
 
 
+def _parse_edge(
+    row: dict,
+    entities: dict[str, Entity],
+    location: str,
+) -> Edge | None:
+    """Проверить одну запись; вернуть None для нулевой доли."""
+    if None in row or any(value is None for value in row.values()):
+        raise ValueError(f"{location}: неверное число полей")
+
+    owner_id = row["owner_id"].strip()
+    owned_id = row["owned_id"].strip()
+    raw_share = row["share"].strip()
+
+    if owner_id not in entities:
+        raise ValueError(f"{location}: неизвестный владелец {owner_id!r}")
+
+    if owned_id not in entities:
+        raise ValueError(f"{location}: неизвестный объект владения {owned_id!r}")
+
+    if entities[owned_id].type != "company":
+        raise ValueError(
+            f"{location}: объект владения {owned_id!r} " f"должен быть компанией"
+        )
+
+    try:
+        share = float(raw_share)
+    except ValueError as exc:
+        raise ValueError(f"{location}: доля {raw_share!r} не является числом") from exc
+
+    if not math.isfinite(share):
+        raise ValueError(f"{location}: доля должна быть конечным числом")
+
+    if not 0 <= share <= 1:
+        raise ValueError(
+            f"{location}: доля {share} " f"должна находиться в диапазоне [0, 1]"
+        )
+
+    if share == 0:
+        return None
+
+    return Edge(
+        owner_id=owner_id,
+        owned_id=owned_id,
+        share=share,
+    )
+
+
 def load_edges(
     path: str | Path,
     entities: dict[str, Entity],
+    *,
+    skip_invalid: bool = False,
 ) -> list[Edge]:
     """Загрузить проверенные связи владения из CSV.
 
@@ -79,6 +131,10 @@ def load_edges(
 
     path = Path(path)
     edges: list[Edge] = []
+
+    total = 0
+    invalid = 0
+    zero = 0
 
     # Поддерживаем UTF-8 с BOM и без него.
     # Обработку переносов строк оставляем CSV-парсеру.
@@ -96,58 +152,32 @@ def load_edges(
             raise ValueError(f"{path}: ожидаются колонки owner_id,owned_id,share")
 
         for row in reader:
+            total += 1
             location = f"{path}, строка {reader.line_num}"
 
-            # Лишние поля DictReader помещает под ключ None,
-            # отсутствующие поля заполняет значением None.
-            if None in row or any(value is None for value in row.values()):
-                raise ValueError(f"{location}: неверное число полей")
-
-            # Удаляем пробелы до поиска ID и преобразования доли.
-            owner_id = row["owner_id"].strip()
-            owned_id = row["owned_id"].strip()
-            raw_share = row["share"].strip()
-
-            # Проверяем существование ID до обращения
-            # к соответствующим объектам в словаре.
-            if owner_id not in entities:
-                raise ValueError(f"{location}: неизвестный владелец {owner_id!r}")
-
-            if owned_id not in entities:
-                raise ValueError(
-                    f"{location}: неизвестный объект владения {owned_id!r}"
-                )
-
-            # Владельцем может быть человек или компания,
-            # объектом владения — только компания.
-            if entities[owned_id].type != "company":
-                raise ValueError(
-                    f"{location}: объект владения {owned_id!r} "
-                    f"должен быть компанией"
-                )
-
-            # Преобразование Share из str в float
             try:
-                share = float(raw_share)
+                edge = _parse_edge(row, entities, location)
             except ValueError as exc:
-                raise ValueError(
-                    f"{location}: доля {raw_share!r} " f"не является числом"
-                ) from exc
+                if not skip_invalid:
+                    raise
 
-            # float() принимает NaN и бесконечность,
-            # поэтому проверяем конечность отдельно.
-            if not math.isfinite(share):
-                raise ValueError(f"{location}: доля должна быть конечным числом")
-
-            if not 0 <= share <= 1:
-                raise ValueError(
-                    f"{location}: доля {share} " f"должна находиться в диапазоне [0, 1]"
-                )
-
-            # Нулевая доля допустима, но не влияет на расчёт.
-            if share == 0:
+                invalid += 1
+                logging.warning("Пропущена запись: %s", exc)
                 continue
 
-            edges.append(Edge(owner_id=owner_id, owned_id=owned_id, share=share))
+            if edge is None:
+                zero += 1
+                continue
+
+            edges.append(edge)
+
+    logger.info(
+        "%s: прочитано=%d, загружено=%d, некорректных=%d, нулевых=%d",
+        path,
+        total,
+        len(edges),
+        invalid,
+        zero,
+    )
 
     return edges
